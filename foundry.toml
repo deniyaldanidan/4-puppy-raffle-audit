@@ -1,7 +1,10 @@
 [profile.default]
-src = "src"
-out = "out"
+# auto_detect_solc = true
+allow_paths = ["lib"]
 libs = ["lib"]
+out = "out"
+# solc_version = "0.7.6"
+src = "src"
 
 remappings = ['@openzeppelin/contracts=lib/openzeppelin-contracts/contracts']
 

